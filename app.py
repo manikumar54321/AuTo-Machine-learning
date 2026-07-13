@@ -1,18 +1,17 @@
 import os
 import traceback
-from flask import Flask, request, jsonify, render_template, send_file
 import zipfile as zp
+from flask import Flask, request, jsonify, render_template, send_file
 from ml_engine import AutoMLSession
 from cnn_task import AutoImageSession
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024 
-# Is line ko add karein taaki Flask heavy incoming content streams ko direct reject na kare
+app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024
+# Heavy incoming content streams handle karne ke liye config
 app.config['MAX_FORM_MEMORY_SIZE'] = 100 * 1024 * 1024
 
 # In-memory session store: session_id -> AutoMLSession / AutoImageSession
 SESSIONS = {}
-
 
 def get_session(session_id):
     session = SESSIONS.get(session_id)
@@ -20,22 +19,21 @@ def get_session(session_id):
         raise KeyError("Unknown or expired session_id. Upload a dataset again.")
     return session
 
-
 @app.route("/")
 def index():
     return render_template("index.html")
-
 
 @app.route("/api/upload", methods=["POST"])
 def upload():
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded."}), 400
+        
     file = request.files["file"]
-    
     filename = file.filename.lower()
+    
     if not (filename.endswith(".csv") or filename.endswith(".zip")):
         return jsonify({"error": "Only .csv and .zip files are supported right now."}), 400
-
+        
     # Task type ke hisaab se session toggle karein
     if filename.endswith(".zip"):
         session = AutoImageSession()
@@ -49,10 +47,9 @@ def upload():
             summary = session.load_csv(file)
         except Exception as e:
             return jsonify({"error": f"Could not read CSV: {e}"}), 400
-
+            
     SESSIONS[session.id] = session
     return jsonify(summary)
-
 
 @app.route("/api/configure", methods=["POST"])
 def configure():
@@ -77,7 +74,6 @@ def configure():
         return jsonify({"error": str(e)}), 400
     return jsonify(result)
 
-
 @app.route("/api/train", methods=["POST"])
 def train():
     data = request.get_json(force=True)
@@ -91,15 +87,15 @@ def train():
         epochs = max(1, min(epochs, 300))
         batch_size = max(1, min(batch_size, 512))
         test_size = min(max(test_size, 0.05), 0.5)
-
+        
         result = session.train(test_size=test_size, epochs=epochs, lr=lr, batch_size=batch_size)
     except (KeyError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": f"Training failed: {e}"}), 500
-
-    # Frontend compatibility ke liye conditional JSON response
+        
+    # Frontend compatibility ke liye conditional JSON response (indented inside train)
     if session.task_type == "image_classification":
         return jsonify({
             "log": result["log"],
@@ -110,7 +106,7 @@ def train():
             "categorical_features": [],
             "categories": {}
         })
-
+        
     return jsonify({
         "log": result["log"],
         "final": result["final"],
@@ -121,7 +117,6 @@ def train():
         "categories": {c: list(session.cat_encoders[c].classes_) for c in session.categorical_features},
     })
 
-
 @app.route("/api/predict", methods=["POST"])
 def predict():
     # 1. Image prediction handle karein (Multipart Form File Upload)
@@ -130,17 +125,15 @@ def predict():
             file = request.files["image"]
             session_id = request.form.get("session_id")
             session = get_session(session_id)
-            
             if session.model is None:
                 return jsonify({"error": "Train an image model before predicting."}), 400
-                
             result = session.predict_one(file.read())
             return jsonify(result)
         except (KeyError, ValueError) as e:
             return jsonify({"error": str(e)}), 400
         except Exception as e:
             return jsonify({"error": f"Prediction failed: {e}"}), 500
-
+            
     # 2. Existing Tabular prediction logic (JSON Data)
     data = request.get_json(force=True)
     try:
@@ -152,8 +145,8 @@ def predict():
         return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": f"Prediction failed: {e}"}), 500
+        
     return jsonify(result)
-
 
 @app.route("/api/download_model/<session_id>", methods=["GET"])
 def download_model(session_id):
@@ -172,17 +165,13 @@ def download_model(session_id):
         mimetype="application/octet-stream",
     )
 
-
 @app.route("/api/reset", methods=["POST"])
 def reset():
     data = request.get_json(force=True)
     SESSIONS.pop(data.get("session_id"), None)
     return jsonify({"ok": True})
 
-
 if __name__ == '__main__':
-    # Railway ek 'PORT' environment variable deta hai, agar wo na mile toh default 8080 use hoga
+    # Railway environment variable handle karne ke liye setup
     port = int(os.environ.get('PORT', 8080))
-    
-    # host='0.0.0.0' lagana sabse zaroori hai
     app.run(host='0.0.0.0', port=port, debug=False)
