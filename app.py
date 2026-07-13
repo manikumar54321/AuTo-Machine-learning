@@ -1,10 +1,9 @@
 import os
 import traceback
 from flask import Flask, request, jsonify, render_template, send_file
-import zipfile as zp
+
 from ml_engine import AutoMLSession
-with zp.ZipFile('templates.zip','r') as f:
-  f.extractall('/')
+
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024  # 25 MB upload cap
 
