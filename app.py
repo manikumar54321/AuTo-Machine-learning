@@ -133,10 +133,6 @@ def reset():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    # use_reloader=False is important: the debug reloader watches files and
-    # can restart the whole process mid-request (killing the socket the
-    # browser is waiting on), which shows up in the browser as a generic
-    # "Failed to fetch" with no error detail. threaded=True lets the static
-    # file requests (css/js) keep being served while a long train request
-    # is in flight.
-    app.run(host="127.0.0.1", port=port, debug=True, use_reloader=False, threaded=True)
+    # host ko "0.0.0.0" karna zaroori hai taaki Railway traffic accept kar sake
+    # debug ko False rakhein production deployment ke liye
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
