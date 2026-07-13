@@ -1,14 +1,16 @@
 import os
 import traceback
 from flask import Flask, request, jsonify, render_template, send_file
-
+import zipfile as zp
 from ml_engine import AutoMLSession
+from cnn_task import AutoImageSession
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024  # 25 MB upload cap
+app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024 
+# Is line ko add karein taaki Flask heavy incoming content streams ko direct reject na kare
+app.config['MAX_FORM_MEMORY_SIZE'] = 100 * 1024 * 1024
 
-# In-memory session store: session_id -> AutoMLSession
-# Fine for a single-process local/demo deployment.
+# In-memory session store: session_id -> AutoMLSession / AutoImageSession
 SESSIONS = {}
 
 
@@ -29,14 +31,24 @@ def upload():
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded."}), 400
     file = request.files["file"]
-    if not file.filename.lower().endswith(".csv"):
-        return jsonify({"error": "Only .csv files are supported right now."}), 400
+    
+    filename = file.filename.lower()
+    if not (filename.endswith(".csv") or filename.endswith(".zip")):
+        return jsonify({"error": "Only .csv and .zip files are supported right now."}), 400
 
-    session = AutoMLSession()
-    try:
-        summary = session.load_csv(file)
-    except Exception as e:
-        return jsonify({"error": f"Could not read CSV: {e}"}), 400
+    # Task type ke hisaab se session toggle karein
+    if filename.endswith(".zip"):
+        session = AutoImageSession()
+        try:
+            summary = session.load_image_zip(file)
+        except Exception as e:
+            return jsonify({"error": f"Could not read ZIP: {e}"}), 400
+    else:
+        session = AutoMLSession()
+        try:
+            summary = session.load_csv(file)
+        except Exception as e:
+            return jsonify({"error": f"Could not read CSV: {e}"}), 400
 
     SESSIONS[session.id] = session
     return jsonify(summary)
@@ -47,6 +59,15 @@ def configure():
     data = request.get_json(force=True)
     try:
         session = get_session(data.get("session_id"))
+        
+        # Image classification ke liye explicit configuration ki zaroorat nahi hai
+        if session.task_type == "image_classification":
+            return jsonify({
+                "task_type": session.task_type,
+                "categorical_features": [],
+                "numeric_features": []
+            })
+            
         result = session.configure(
             feature_columns=data.get("feature_columns", []),
             target_column=data.get("target_column"),
@@ -66,6 +87,7 @@ def train():
         lr = float(data.get("lr", 0.001))
         batch_size = int(data.get("batch_size", 32))
         test_size = float(data.get("test_size", 0.2))
+        
         epochs = max(1, min(epochs, 300))
         batch_size = max(1, min(batch_size, 512))
         test_size = min(max(test_size, 0.05), 0.5)
@@ -74,11 +96,20 @@ def train():
     except (KeyError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
-        # Print the full traceback to the server terminal - if training
-        # ever silently kills the connection again, this is where the real
-        # cause will show up (the browser only ever sees "Failed to fetch").
         traceback.print_exc()
         return jsonify({"error": f"Training failed: {e}"}), 500
+
+    # Frontend compatibility ke liye conditional JSON response
+    if session.task_type == "image_classification":
+        return jsonify({
+            "log": result["log"],
+            "final": result["final"],
+            "problem_mode": result["problem_mode"],
+            "class_names": session.class_names,
+            "feature_columns": [],
+            "categorical_features": [],
+            "categories": {}
+        })
 
     return jsonify({
         "log": result["log"],
@@ -93,6 +124,24 @@ def train():
 
 @app.route("/api/predict", methods=["POST"])
 def predict():
+    # 1. Image prediction handle karein (Multipart Form File Upload)
+    if "image" in request.files:
+        try:
+            file = request.files["image"]
+            session_id = request.form.get("session_id")
+            session = get_session(session_id)
+            
+            if session.model is None:
+                return jsonify({"error": "Train an image model before predicting."}), 400
+                
+            result = session.predict_one(file.read())
+            return jsonify(result)
+        except (KeyError, ValueError) as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            return jsonify({"error": f"Prediction failed: {e}"}), 500
+
+    # 2. Existing Tabular prediction logic (JSON Data)
     data = request.get_json(force=True)
     try:
         session = get_session(data.get("session_id"))
@@ -114,6 +163,7 @@ def download_model(session_id):
             return jsonify({"error": "Train a model before downloading."}), 400
     except KeyError as e:
         return jsonify({"error": str(e)}), 404
+        
     buf = session.to_bytes()
     return send_file(
         buf,
@@ -132,6 +182,4 @@ def reset():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    # host ko "0.0.0.0" karna zaroori hai taaki Railway traffic accept kar sake
-    # debug ko False rakhein production deployment ke liye
-    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
+    app.run(host="127.0.0.1", port=port, debug=True, use_reloader=False, threaded=True)
